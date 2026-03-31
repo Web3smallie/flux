@@ -139,18 +139,55 @@ export default function FluxDashboard() {
       setProofs(proofsData.proofs || [])
       setLastUpdated(new Date())
 
-      // x402: Reward winning agent
+     // x402: Reward winning agent + AUTO-RUN EXECUTOR + AUTO-RUN SHIELD
       if (consensusData.winningAgent) {
         await fetch('/api/x402', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'reward', consensusWinner: consensusData.winningAgent })
         })
-
-        // Fetch updated x402 balances
         const x402Res = await fetch('/api/x402')
         const x402Data = await x402Res.json()
         setX402(x402Data)
+
+        // AUTO-RUN EXECUTOR
+        setExecuting(true)
+        try {
+          const execRes = await fetch('/api/agents/executor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              winningAgent: consensusData.winningAgent,
+              winningStrategy: consensusData.winningStrategy,
+              estimatedAPY: consensusData.estimatedAPY,
+              holdings: holdingsParam
+            })
+          })
+          const execData = await execRes.json()
+          setExecutor(execData)
+
+          // AUTO-RUN SHIELD
+          setShieldLoading(true)
+          const shieldRes = await fetch('/api/agents/shield', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contracts: execData.contracts,
+              holdings: holdingsParam,
+              winningAgent: consensusData.winningAgent,
+              executionSteps: execData.executionSteps,
+              walletAddress: walletAddress || null,
+              transactionData: execData
+            })
+          })
+          const shieldData = await shieldRes.json()
+          setShield(shieldData)
+        } catch (e) {
+          console.error('Auto executor/shield failed:', e)
+        } finally {
+          setExecuting(false)
+          setShieldLoading(false)
+        }
       }
     } catch (e) {
       console.error('Failed to fetch agents:', e)
@@ -159,44 +196,6 @@ export default function FluxDashboard() {
     }
   }, [holdings])
 
-  const runExecutor = async () => {
-    if (!consensus) return
-    setExecuting(true)
-    try {
-      const res = await fetch('/api/agents/executor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          winningAgent: consensus.winningAgent,
-          winningStrategy: consensus.winningStrategy,
-          estimatedAPY: consensus.estimatedAPY,
-          holdings: holdings || 'MNT: 500, USDT: 200'
-        })
-      })
-      const data = await res.json()
-      setExecutor(data)
-
-      // Auto-run Shield after Executor
-      setShieldLoading(true)
-      const shieldRes = await fetch('/api/agents/shield', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contracts: data.contracts,
-          holdings: holdings || 'MNT: 500, USDT: 200',
-          winningAgent: consensus.winningAgent,
-          executionSteps: data.executionSteps
-        })
-      })
-      const shieldData = await shieldRes.json()
-      setShield(shieldData)
-    } catch (e) {
-      console.error('Executor failed:', e)
-    } finally {
-      setExecuting(false)
-      setShieldLoading(false)
-    }
-  }
 
  useEffect(() => {
     // Auto-run on first load with demo holdings
@@ -319,21 +318,11 @@ export default function FluxDashboard() {
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: '42px', fontWeight: '800', color: '#00D4AA' }}>{consensus.estimatedAPY}%</div>
                 <div style={{ fontSize: '11px', color: '#64748B' }}>ESTIMATED APY</div>
-                {!executor && (
-                  shield && (shield.threatLevel === 'danger' || shield.threatLevel === 'critical') ? (
-                    <div style={{ marginTop: '8px', background: '#2B0D0D', border: '1px solid #EF4444', padding: '8px 20px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', color: '#EF4444', textAlign: 'center' }}>
-                      🛡️ SHIELD BLOCKED — Threat detected. Execution prevented.
-                    </div>
-                  ) : (
-                    <button onClick={runExecutor} disabled={executing} style={{ marginTop: '8px', background: '#00D4AA', color: '#0A0B0F', border: 'none', padding: '8px 20px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', cursor: executing ? 'not-allowed' : 'pointer', opacity: executing ? 0.7 : 1 }}>
-                      {executing ? '⚡ ROUTING...' : '⚡ EXECUTE STRATEGY'}
-                    </button>
-                  )
-                )}
-              </div>
+               </div>
             </div>
           </div>
         )}
+              
 
         {/* Executor Result */}
         {executor && (
@@ -477,7 +466,7 @@ export default function FluxDashboard() {
           </div>
         )}
 
-        {/* Shield Results */}
+{/* Shield Results */}
         {shieldLoading && (
           <div style={{ background: '#111827', border: '1px solid #1E2433', borderRadius: '12px', padding: '20px', marginBottom: '24px', textAlign: 'center' }}>
             <div style={{ fontSize: '14px', color: '#00D4AA' }}>🛡️ SHIELD scanning Mantle ecosystem for threats...</div>
@@ -486,12 +475,14 @@ export default function FluxDashboard() {
 
         {shield && (
           <div style={{ background: '#111827', border: `2px solid ${shield.threatLevel === 'safe' ? '#00D4AA' : shield.threatLevel === 'caution' ? '#F59E0B' : '#EF4444'}`, borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
+            
+            {/* Shield Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <div style={{ fontSize: '20px' }}>🛡️</div>
                 <div>
-                  <div style={{ fontSize: '14px', fontWeight: '700', color: '#00D4AA' }}>SHIELD — Mantle Immune System</div>
-                  <div style={{ fontSize: '11px', color: '#64748B' }}>{shield.totalThreatsInMemory} threats in collective memory · {shield.ecosystemAnomalies} ecosystem anomalies</div>
+                  <div style={{ fontSize: '16px', fontWeight: '800', color: '#00D4AA' }}>SHIELD — Mantle Immune System</div>
+                  <div style={{ fontSize: '11px', color: '#64748B' }}>{shield.totalThreatsInMemory} threats in collective memory · {shield.ecosystemAnomalies} ecosystem anomalies · 7 security functions</div>
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -505,9 +496,41 @@ export default function FluxDashboard() {
               </div>
             </div>
 
-            {/* 4 Shield Features */}
+            {/* 7 Shield Features Grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px', marginBottom: '16px' }}>
-              
+
+              {/* Transaction Interception */}
+              <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px', border: shield.transactionInterception?.intercepted ? '1px solid #EF4444' : '1px solid #1E2433' }}>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>🔍 TRANSACTION INTERCEPTION</div>
+                <div style={{ fontSize: '12px', color: shield.transactionInterception?.maliciousFunctionsDetected ? '#EF4444' : '#00D4AA', marginBottom: '4px', fontWeight: '600' }}>
+                  {shield.transactionInterception?.maliciousFunctionsDetected ? '⛔ MALICIOUS FUNCTIONS DETECTED' : '✅ No malicious functions detected'}
+                </div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>{shield.transactionInterception?.simulationResult}</div>
+                {shield.transactionInterception?.suspiciousFunctions?.length > 0 && (
+                  <div style={{ fontSize: '11px', color: '#EF4444' }}>⚠️ {shield.transactionInterception.suspiciousFunctions.join(', ')}</div>
+                )}
+              </div>
+
+              {/* Wallet Security Scan */}
+              <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>👛 WALLET SECURITY SCAN</div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>
+                  Risk: <span style={{ color: shield.walletScan?.overallRisk === 'low' ? '#00D4AA' : shield.walletScan?.overallRisk === 'medium' ? '#F59E0B' : '#EF4444', fontWeight: '700' }}>{shield.walletScan?.overallRisk?.toUpperCase()}</span>
+                </div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>Dangerous approvals: <span style={{ color: shield.walletScan?.dangerousApprovals > 0 ? '#EF4444' : '#00D4AA' }}>{shield.walletScan?.dangerousApprovals}</span></div>
+                <div style={{ fontSize: '12px', color: '#64748B', fontStyle: 'italic' }}>{shield.walletScan?.recommendation}</div>
+              </div>
+
+              {/* Contract Analysis */}
+              <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>📋 CONTRACT ANALYSIS</div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>
+                  Rug pull risk: <span style={{ color: shield.contractAnalysis?.rugPullRisk === 'low' ? '#00D4AA' : shield.contractAnalysis?.rugPullRisk === 'medium' ? '#F59E0B' : '#EF4444', fontWeight: '700' }}>{shield.contractAnalysis?.rugPullRisk?.toUpperCase()}</span>
+                </div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>{shield.contractAnalysis?.contractsAnalyzed} contracts analyzed</div>
+                <div style={{ fontSize: '12px', color: '#64748B' }}>{shield.contractAnalysis?.overallSafety}</div>
+              </div>
+
               {/* Collective Memory */}
               <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
                 <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>🧠 COLLECTIVE MEMORY</div>
@@ -546,7 +569,7 @@ export default function FluxDashboard() {
 
               {/* Immune Response */}
               <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
-                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>⚡ IMMUNE RESPONSE</div>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>⚡ AI IMMUNE RESPONSE</div>
                 <div style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: shield.immuneResponse?.urgency === 'none' ? '#0D2B1F' : '#2B1F0D', color: shield.immuneResponse?.urgency === 'none' ? '#00D4AA' : '#F59E0B', display: 'inline-block', marginBottom: '6px', fontWeight: '700' }}>
                   URGENCY: {shield.immuneResponse?.urgency?.toUpperCase()}
                 </div>
@@ -559,22 +582,27 @@ export default function FluxDashboard() {
                   <div style={{ fontSize: '12px', color: '#00D4AA' }}>✅ No governance action required</div>
                 )}
               </div>
+
             </div>
 
             {/* Final Recommendation */}
-            <div style={{ padding: '12px', background: '#0A0B0F', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ padding: '12px', background: '#0A0B0F', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
               <div style={{ fontSize: '13px', color: '#E2E8F0' }}>{shield.recommendation}</div>
               <div style={{ fontSize: '11px', color: '#00D4AA', whiteSpace: 'nowrap', marginLeft: '16px' }}>✓ {shield.onchainProof}</div>
             </div>
 
-            {shield.safeToExecute && (
-              <div style={{ marginTop: '12px', padding: '10px', background: '#0D2B1F', borderRadius: '8px', textAlign: 'center', fontSize: '13px', color: '#00D4AA', fontWeight: '700' }}>
+            {shield.safeToExecute ? (
+              <div style={{ padding: '10px', background: '#0D2B1F', borderRadius: '8px', textAlign: 'center', fontSize: '13px', color: '#00D4AA', fontWeight: '700' }}>
                 🛡️ SHIELD VERIFIED — Safe to execute on Mantle
+              </div>
+            ) : (
+              <div style={{ padding: '10px', background: '#2B0D0D', borderRadius: '8px', textAlign: 'center', fontSize: '13px', color: '#EF4444', fontWeight: '700' }}>
+                ⛔ SHIELD BLOCKED — Threat detected. Execution prevented by Mantle Immune System.
               </div>
             )}
           </div>
         )}
-        
+
         {/* x402 Payment Feed */}
         {x402 && (
           <div style={{ background: '#111827', border: '1px solid #1E2433', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>

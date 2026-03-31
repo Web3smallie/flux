@@ -1,7 +1,6 @@
-// x402 Payment Protocol
-// Agents pay each other economically to submit signals to consensus
-// This creates a real economic game — agents with poor track records 
-// must pay more to have their signals considered
+// x402 Payment Protocol — Full Economic Loop
+// Users deposit MNT → distributed to agents as budget
+// Agents pay to compete → winner earns from pool → user gets yield bonus
 
 const AGENT_BALANCES: Map<string, number> = new Map([
   ['mETH', 100],
@@ -10,8 +9,12 @@ const AGENT_BALANCES: Map<string, number> = new Map([
   ['DeFi', 100],
   ['UR', 100],
   ['Executor', 50],
-  ['Shield', 150] // Shield gets more budget as security is critical
+  ['Shield', 150]
 ])
+
+const CONSENSUS_POOL = { balance: 0 }
+const USER_EARNINGS: Map<string, number> = new Map()
+const PROTOCOL_FEE_POOL = { balance: 0 }
 
 const PAYMENT_HISTORY: {
   from: string
@@ -20,11 +23,14 @@ const PAYMENT_HISTORY: {
   reason: string
   timestamp: number
   txHash: string
+  type: 'submission' | 'challenge' | 'reward' | 'user_bonus' | 'protocol_fee'
 }[] = []
 
-const SUBMISSION_FEE = 5 // MNT cost to submit a signal
-const CHALLENGE_FEE = 10 // MNT cost to challenge another agent
-const WINNER_REWARD = 25 // MNT reward for winning consensus
+const SUBMISSION_FEE = 5
+const CHALLENGE_FEE = 10
+const WINNER_REWARD = 25
+const USER_BONUS_PERCENT = 0.6 // 60% of remaining pool to user
+const PROTOCOL_FEE_PERCENT = 0.4 // 40% to protocol
 
 function generateTxHash(from: string, to: string, amount: number): string {
   const data = `${from}-${to}-${amount}-${Date.now()}`
@@ -38,19 +44,20 @@ function generateTxHash(from: string, to: string, amount: number): string {
 
 export async function POST(req: Request) {
   try {
-    const { action, agent, targetAgent, consensusWinner } = await req.json()
+    const { action, agent, targetAgent, consensusWinner, userAddress } = await req.json()
 
+    // Agent pays submission fee to enter consensus
     if (action === 'submit') {
-      // Agent pays submission fee to enter consensus
       const balance = AGENT_BALANCES.get(agent) || 0
       if (balance < SUBMISSION_FEE) {
         return Response.json({
           success: false,
-          error: `${agent} has insufficient balance (${balance} MNT) to submit signal. Required: ${SUBMISSION_FEE} MNT`
+          error: `${agent} has insufficient balance (${balance} MNT). Required: ${SUBMISSION_FEE} MNT`
         })
       }
 
       AGENT_BALANCES.set(agent, balance - SUBMISSION_FEE)
+      CONSENSUS_POOL.balance += SUBMISSION_FEE
       const txHash = generateTxHash(agent, 'ConsensusPool', SUBMISSION_FEE)
 
       PAYMENT_HISTORY.push({
@@ -59,7 +66,8 @@ export async function POST(req: Request) {
         amount: SUBMISSION_FEE,
         reason: `Signal submission fee`,
         timestamp: Date.now(),
-        txHash
+        txHash,
+        type: 'submission'
       })
 
       return Response.json({
@@ -68,13 +76,14 @@ export async function POST(req: Request) {
         agent,
         fee: SUBMISSION_FEE,
         newBalance: AGENT_BALANCES.get(agent),
+        consensusPool: CONSENSUS_POOL.balance,
         txHash,
-        message: `${agent} paid ${SUBMISSION_FEE} MNT to submit signal to consensus`
+        message: `${agent} paid ${SUBMISSION_FEE} MNT to submit signal`
       })
     }
 
+    // Agent pays to challenge another agent
     if (action === 'challenge') {
-      // Agent pays to challenge another agent's signal
       const balance = AGENT_BALANCES.get(agent) || 0
       if (balance < CHALLENGE_FEE) {
         return Response.json({
@@ -84,15 +93,17 @@ export async function POST(req: Request) {
       }
 
       AGENT_BALANCES.set(agent, balance - CHALLENGE_FEE)
+      CONSENSUS_POOL.balance += CHALLENGE_FEE
       const txHash = generateTxHash(agent, targetAgent || 'Unknown', CHALLENGE_FEE)
 
       PAYMENT_HISTORY.push({
         from: agent,
-        to: targetAgent || 'Unknown',
+        to: 'ConsensusPool',
         amount: CHALLENGE_FEE,
         reason: `Challenge fee against ${targetAgent}`,
         timestamp: Date.now(),
-        txHash
+        txHash,
+        type: 'challenge'
       })
 
       return Response.json({
@@ -102,16 +113,18 @@ export async function POST(req: Request) {
         targetAgent,
         fee: CHALLENGE_FEE,
         newBalance: AGENT_BALANCES.get(agent),
+        consensusPool: CONSENSUS_POOL.balance,
         txHash,
         message: `${agent} paid ${CHALLENGE_FEE} MNT to challenge ${targetAgent}`
       })
     }
 
+    // Winner earns reward, remaining pool split between user and protocol
     if (action === 'reward') {
-      // Winning agent receives reward from consensus pool
-      const balance = AGENT_BALANCES.get(consensusWinner) || 0
-      AGENT_BALANCES.set(consensusWinner, balance + WINNER_REWARD)
-      const txHash = generateTxHash('ConsensusPool', consensusWinner, WINNER_REWARD)
+      const winnerBalance = AGENT_BALANCES.get(consensusWinner) || 0
+      AGENT_BALANCES.set(consensusWinner, winnerBalance + WINNER_REWARD)
+      CONSENSUS_POOL.balance -= WINNER_REWARD
+      const winnerTxHash = generateTxHash('ConsensusPool', consensusWinner, WINNER_REWARD)
 
       PAYMENT_HISTORY.push({
         from: 'ConsensusPool',
@@ -119,17 +132,58 @@ export async function POST(req: Request) {
         amount: WINNER_REWARD,
         reason: `Consensus winner reward`,
         timestamp: Date.now(),
-        txHash
+        txHash: winnerTxHash,
+        type: 'reward'
       })
+
+      // Split remaining pool
+      const remainingPool = CONSENSUS_POOL.balance
+      if (remainingPool > 0) {
+        const userBonus = Math.floor(remainingPool * USER_BONUS_PERCENT)
+        const protocolFee = Math.floor(remainingPool * PROTOCOL_FEE_PERCENT)
+
+        // User bonus
+        if (userAddress) {
+          const currentEarnings = USER_EARNINGS.get(userAddress) || 0
+          USER_EARNINGS.set(userAddress, currentEarnings + userBonus)
+          const userTxHash = generateTxHash('ConsensusPool', userAddress, userBonus)
+          PAYMENT_HISTORY.push({
+            from: 'ConsensusPool',
+            to: userAddress,
+            amount: userBonus,
+            reason: `User yield bonus from consensus pool`,
+            timestamp: Date.now(),
+            txHash: userTxHash,
+            type: 'user_bonus'
+          })
+        }
+
+        // Protocol fee
+        PROTOCOL_FEE_POOL.balance += protocolFee
+        const protocolTxHash = generateTxHash('ConsensusPool', 'FluxProtocol', protocolFee)
+        PAYMENT_HISTORY.push({
+          from: 'ConsensusPool',
+          to: 'FluxProtocol',
+          amount: protocolFee,
+          reason: `Protocol fee`,
+          timestamp: Date.now(),
+          txHash: protocolTxHash,
+          type: 'protocol_fee'
+        })
+
+        CONSENSUS_POOL.balance = 0
+      }
 
       return Response.json({
         success: true,
         action: 'reward',
-        agent: consensusWinner,
-        reward: WINNER_REWARD,
-        newBalance: AGENT_BALANCES.get(consensusWinner),
-        txHash,
-        message: `${consensusWinner} earned ${WINNER_REWARD} MNT for winning consensus`
+        winner: consensusWinner,
+        winnerReward: WINNER_REWARD,
+        newWinnerBalance: AGENT_BALANCES.get(consensusWinner),
+        userBonus: userAddress ? USER_EARNINGS.get(userAddress) : 0,
+        protocolFee: PROTOCOL_FEE_POOL.balance,
+        txHash: winnerTxHash,
+        message: `${consensusWinner} earned ${WINNER_REWARD} MNT. Pool distributed to user and protocol.`
       })
     }
 
@@ -143,17 +197,21 @@ export async function POST(req: Request) {
 export async function GET() {
   try {
     const balances = Object.fromEntries(AGENT_BALANCES)
-    
+
     return Response.json({
       balances,
+      consensusPool: CONSENSUS_POOL.balance,
+      protocolFees: PROTOCOL_FEE_POOL.balance,
       totalPayments: PAYMENT_HISTORY.length,
       recentPayments: PAYMENT_HISTORY.slice(-10).reverse(),
       fees: {
         submission: SUBMISSION_FEE,
         challenge: CHALLENGE_FEE,
-        winnerReward: WINNER_REWARD
+        winnerReward: WINNER_REWARD,
+        userBonusPercent: `${USER_BONUS_PERCENT * 100}%`,
+        protocolFeePercent: `${PROTOCOL_FEE_PERCENT * 100}%`
       },
-      description: 'x402 Agent Payment Protocol — agents pay economically to submit and challenge signals'
+      description: 'x402 Agent Payment Protocol — agents pay to compete, winners earn, users get yield bonus, protocol takes fee'
     })
   } catch (e) {
     return Response.json({ error: 'x402 fetch failed' }, { status: 500 })

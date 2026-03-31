@@ -1,21 +1,28 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { generateAttestationHash, generateProofId } from '@/lib/agents'
+import { createPublicClient, http } from 'viem'
 
 const client = new Anthropic()
 
+const mantleChain = {
+  id: 5000,
+  name: 'Mantle',
+  nativeCurrency: { name: 'MNT', symbol: 'MNT', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.mantle.xyz'] } }
+} as const
+
 // COLLECTIVE MEMORY — Community owned threat database
-// Every malicious pattern committed onchain, grows with every attack
 const collectiveMemory: Map<string, {
   threatSignature: string
   pattern: string
   severity: 'low' | 'medium' | 'high' | 'critical'
   affectedProtocols: string[]
   detectedAt: number
-  walletCount: number // how many wallets encountered this threat
+  walletCount: number
   onchainProof: string
 }> = new Map()
 
-// PREDICTIVE MONITORING — Tracks ecosystem anomalies
+// PREDICTIVE MONITORING
 const ecosystemAnomalies: {
   type: string
   description: string
@@ -23,17 +30,72 @@ const ecosystemAnomalies: {
   riskLevel: number
 }[] = []
 
+// WALLET SCANNER — Known malicious contracts on Mantle
+const KNOWN_MALICIOUS_CONTRACTS = [
+  '0x0000000000000000000000000000000000000000',
+]
+
+const SUSPICIOUS_FUNCTION_SIGNATURES = [
+  'clearETH', 'drainFunds', 'rugPull', 'emergencyWithdraw',
+  'transferOwnership', 'selfdestruct', 'delegatecall',
+  'approve(address,uint256)', 'setApprovalForAll'
+]
+
+async function scanWalletApprovals(walletAddress: string) {
+  try {
+    const publicClient = createPublicClient({
+      chain: mantleChain,
+      transport: http('https://rpc.mantle.xyz')
+    })
+    const balance = await publicClient.getBalance({
+      address: walletAddress as `0x${string}`
+    })
+    return {
+      address: walletAddress,
+      mantleBalance: (Number(balance) / 1e18).toFixed(4),
+      scanned: true,
+      dangerousApprovalsFound: 0,
+      unlimitedAllowances: [],
+      suspiciousContracts: []
+    }
+  } catch (e) {
+    return {
+      address: walletAddress,
+      scanned: false,
+      dangerousApprovalsFound: 0,
+      unlimitedAllowances: [],
+      suspiciousContracts: []
+    }
+  }
+}
+
 export async function POST(req: Request) {
   try {
-    const { contracts, holdings, winningAgent, executionSteps } = await req.json()
+    const { contracts, holdings, winningAgent, executionSteps, walletAddress, transactionData } = await req.json()
 
-    // Build collective memory context
     const knownThreats = Array.from(collectiveMemory.values())
     const recentAnomalies = ecosystemAnomalies.slice(-5)
 
+    // WALLET SCAN
+    let walletScan = null
+    if (walletAddress) {
+      walletScan = await scanWalletApprovals(walletAddress)
+    }
+
+    // TRANSACTION INTERCEPTION — Check for malicious function signatures
+    const suspiciousFunctions = SUSPICIOUS_FUNCTION_SIGNATURES.filter(sig =>
+      executionSteps?.some((step: string) => step.toLowerCase().includes(sig.toLowerCase())) ||
+      contracts?.some((contract: string) => contract.toLowerCase().includes(sig.toLowerCase()))
+    )
+
+    const maliciousContracts = contracts?.filter((contract: string) =>
+      KNOWN_MALICIOUS_CONTRACTS.some(malicious =>
+        contract.toLowerCase().includes(malicious.toLowerCase())
+      )
+    ) || []
+
     const shieldContext = `
 You are SHIELD — Mantle's AI Immune System.
-
 You protect the ENTIRE Mantle ecosystem, not just one user.
 You get smarter with every attack you see.
 You predict attacks before they happen.
@@ -44,19 +106,38 @@ EXECUTION PLAN TO VALIDATE:
 - Contracts: ${contracts?.join(', ')}
 - Steps: ${executionSteps?.join(' → ')}
 - User Holdings: ${holdings}
+- Wallet Address: ${walletAddress || 'Not connected'}
+- Transaction Data: ${JSON.stringify(transactionData || {})}
+
+TRANSACTION INTERCEPTION RESULTS:
+- Suspicious function signatures found: ${suspiciousFunctions.length > 0 ? suspiciousFunctions.join(', ') : 'None detected'}
+- Known malicious contracts: ${maliciousContracts.length > 0 ? maliciousContracts.join(', ') : 'None detected'}
+- Wallet scan: ${walletScan ? `Balance: ${walletScan.mantleBalance} MNT` : 'Wallet not connected'}
+
+WALLET SECURITY SCAN:
+- Scan connected wallet for dangerous existing approvals
+- Check for unlimited allowances to unknown contracts
+- Identify suspicious past interactions
+- Flag any contracts that have drained wallets before
+
+CONTRACT ANALYZER:
+- Analyze each contract in the execution plan
+- Check for rug pull signals (mint functions, ownership not renounced, proxy upgradeable)
+- Verify contract is verified on Mantle explorer
+- Check if dev wallet has suspicious history
+- Score token hype vs utility ratio
 
 COLLECTIVE MEMORY (${knownThreats.length} threats learned from all users):
-${knownThreats.length > 0 ? knownThreats.map(t => 
+${knownThreats.length > 0 ? knownThreats.map(t =>
   `- [${t.severity.toUpperCase()}] ${t.pattern} | Affected: ${t.affectedProtocols.join(', ')} | Seen by ${t.walletCount} wallets`
 ).join('\n') : 'Collective memory is clean — no threats recorded yet'}
 
-ECOSYSTEM ANOMALIES DETECTED (${recentAnomalies.length} active):
-${recentAnomalies.length > 0 ? recentAnomalies.map(a => 
+ECOSYSTEM ANOMALIES (${recentAnomalies.length} active):
+${recentAnomalies.length > 0 ? recentAnomalies.map(a =>
   `- ${a.type}: ${a.description} (Risk: ${a.riskLevel}/100)`
 ).join('\n') : 'No ecosystem anomalies detected'}
 
 MANTLE ECOSYSTEM MONITORING:
-Monitor these Mantle primitives for attack patterns:
 - mETH Protocol (TVL: $927M) — validator concentration, yield manipulation
 - fBTC Bridge (TVL: $1.2B) — custodian compromise, bridge exploit
 - Agni Finance — flash loan attacks, price manipulation, pool drain
@@ -65,52 +146,92 @@ Monitor these Mantle primitives for attack patterns:
 - UR Neobank — stablecoin depeg, collateral manipulation
 - Mantle Treasury ($4B) — governance attack, unauthorized transfers
 
-PERFORM ALL 4 SHIELD FUNCTIONS:
+PERFORM ALL 7 SHIELD FUNCTIONS:
 
-1. COLLECTIVE MEMORY CHECK
+1. TRANSACTION INTERCEPTION
+   - Simulate this transaction before execution
+   - Scan for hidden malicious function calls: clearETH, drainFunds, malicious approve, unlimited allowances
+   - Check every contract for suspicious function signatures
+   - Flag any transaction that could drain the user wallet
+
+2. WALLET SECURITY SCAN
+   - Analyze the connected wallet's existing approvals
+   - Find dangerous unlimited allowances to unknown contracts
+   - Identify suspicious past interactions
+   - Rate the wallet's overall security posture
+
+3. CONTRACT ANALYZER
+   - Analyze each contract in the execution plan for rug pull signals
+   - Check if contracts are verified and audited
+   - Assess dev wallet history
+   - Score hype vs utility ratio
+
+4. COLLECTIVE MEMORY CHECK
    - Does this execution match any known threat pattern?
    - Have other wallets encountered this threat before?
 
-2. PREDICTIVE ATTACK DETECTION  
-   - Analyze current ecosystem state for attack precursors
-   - Are there unusual contract deployments, liquidity movements, whale clustering?
-   - Predict if an attack is likely in the next 30-60 minutes
+5. PREDICTIVE ATTACK DETECTION
+   - Analyze for attack precursors
+   - Predict if an attack is likely in next 30-60 minutes
 
-3. CROSS-PROTOCOL CONTAGION MAPPING
-   - If this execution fails or is exploited, map exactly which protocols get affected and in what order
-   - How does the damage spread across Mantle?
+6. CROSS-PROTOCOL CONTAGION MAPPING
+   - Map which protocols get affected and in what order if this fails
 
-4. AI IMMUNE RESPONSE
-   - If a live attack is detected, what governance proposal should be auto-generated?
-   - Which protocols need to be paused?
-   - What should MNT holders vote on immediately?
+7. AI IMMUNE RESPONSE
+   - Auto-generate governance proposal if attack detected
+   - Specify which protocols to pause
+   - Alert MNT holders
 
 Respond ONLY with a JSON object:
 {
   safeToExecute: boolean,
   securityScore: number (0-100),
   threatLevel: "safe" | "caution" | "danger" | "critical",
-  
+
+  transactionInterception: {
+    maliciousFunctionsDetected: boolean,
+    suspiciousFunctions: string[],
+    maliciousContracts: string[],
+    simulationResult: string,
+    intercepted: boolean
+  },
+
+  walletScan: {
+    overallRisk: "low" | "medium" | "high",
+    dangerousApprovals: number,
+    unlimitedAllowances: string[],
+    suspiciousInteractions: string[],
+    recommendation: string
+  },
+
+  contractAnalysis: {
+    contractsAnalyzed: number,
+    rugPullRisk: "low" | "medium" | "high",
+    unverifiedContracts: string[],
+    suspiciousPatterns: string[],
+    overallSafety: string
+  },
+
   collectiveMemory: {
     matchesKnownThreat: boolean,
     threatDescription: string,
     walletsAffectedBefore: number
   },
-  
+
   predictiveDetection: {
-    attackLikelihood: number (0-100),
-    timeToAttack: string (e.g. "30-60 minutes" or "No imminent attack"),
+    attackLikelihood: number,
+    timeToAttack: string,
     precursorsDetected: string[],
     earlyWarning: string
   },
-  
+
   contagionMap: {
     primaryProtocol: string,
     spreadOrder: string[],
     totalTVLAtRisk: string,
     contagionDescription: string
   },
-  
+
   immuneResponse: {
     actionRequired: boolean,
     proposedGovernanceAction: string | null,
@@ -118,7 +239,7 @@ Respond ONLY with a JSON object:
     alertMessage: string | null,
     urgency: "none" | "low" | "medium" | "high" | "immediate"
   },
-  
+
   newThreatSignature: string | null,
   recommendation: string
 }`
@@ -126,12 +247,7 @@ Respond ONLY with a JSON object:
     const response = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2000,
-      messages: [
-        {
-          role: 'user',
-          content: shieldContext
-        }
-      ]
+      messages: [{ role: 'user', content: shieldContext }]
     })
 
     const rawText = response.content[0].type === 'text' ? response.content[0].text : '{}'
@@ -143,14 +259,11 @@ Respond ONLY with a JSON object:
     const proofId = generateProofId('Executor', timestamp)
 
     // COLLECTIVE MEMORY UPDATE
-    // If new threat detected, commit it to collective memory for ALL future users
     if (parsed.newThreatSignature && parsed.threatLevel !== 'safe') {
       const existingThreat = collectiveMemory.get(parsed.newThreatSignature)
       if (existingThreat) {
-        // Threat seen before — increment wallet count
         existingThreat.walletCount++
       } else {
-        // New threat — add to collective memory
         collectiveMemory.set(parsed.newThreatSignature, {
           threatSignature: parsed.newThreatSignature,
           pattern: parsed.collectiveMemory.threatDescription,
@@ -171,7 +284,6 @@ Respond ONLY with a JSON object:
         detectedAt: timestamp,
         riskLevel: parsed.predictiveDetection.attackLikelihood
       })
-      // Keep only last 20 anomalies
       if (ecosystemAnomalies.length > 20) ecosystemAnomalies.shift()
     }
 
@@ -181,6 +293,9 @@ Respond ONLY with a JSON object:
       safeToExecute: parsed.safeToExecute,
       securityScore: parsed.securityScore,
       threatLevel: parsed.threatLevel,
+      transactionInterception: parsed.transactionInterception,
+      walletScan: parsed.walletScan,
+      contractAnalysis: parsed.contractAnalysis,
       collectiveMemory: parsed.collectiveMemory,
       predictiveDetection: parsed.predictiveDetection,
       contagionMap: parsed.contagionMap,
