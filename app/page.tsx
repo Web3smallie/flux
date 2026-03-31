@@ -25,6 +25,8 @@ export default function FluxDashboard() {
   const [signals, setSignals] = useState<AgentSignal[]>([])
   const [consensus, setConsensus] = useState<ConsensusResult | null>(null)
   const [executor, setExecutor] = useState<any>(null)
+  const [shield, setShield] = useState<any>(null)
+  const [shieldLoading, setShieldLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [executing, setExecuting] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
@@ -33,6 +35,7 @@ export default function FluxDashboard() {
   const [walletAddress, setWalletAddress] = useState<string | null>(null)
   const [walletConnecting, setWalletConnecting] = useState(false)
   const [holdings, setHoldings] = useState<string>('')
+  const [x402, setX402] = useState<any>(null)
 
   const connectWallet = async () => {
     if (typeof window === 'undefined') return
@@ -85,9 +88,22 @@ export default function FluxDashboard() {
     setLoading(true)
     try {
       const holdingsParam = holdings || 'MNT: 500, USDT: 200, ETH: 0.5'
-      const agents = ['meth', 'fbtc', 'mi4', 'defi', 'ur']
+      const agentNames = ['mETH', 'fBTC', 'MI4', 'DeFi', 'UR']
+      const agentRoutes = ['meth', 'fbtc', 'mi4', 'defi', 'ur']
+
+      // x402: Each agent pays submission fee before entering consensus
+      await Promise.all(
+        agentNames.map(agent =>
+          fetch('/api/x402', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'submit', agent })
+          })
+        )
+      )
+
       const results = await Promise.all(
-        agents.map(agent =>
+        agentRoutes.map(agent =>
           fetch(`/api/agents/${agent}?holdings=${encodeURIComponent(holdingsParam)}`).then(r => r.json())
         )
       )
@@ -118,6 +134,24 @@ export default function FluxDashboard() {
       setConsensus(consensusData)
       setProofs(proofsData.proofs || [])
       setLastUpdated(new Date())
+      setSignals(consensusData.trustedSignals.concat(consensusData.challengedSignals))
+      setConsensus(consensusData)
+      setProofs(proofsData.proofs || [])
+      setLastUpdated(new Date())
+
+      // x402: Reward winning agent
+      if (consensusData.winningAgent) {
+        await fetch('/api/x402', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reward', consensusWinner: consensusData.winningAgent })
+        })
+
+        // Fetch updated x402 balances
+        const x402Res = await fetch('/api/x402')
+        const x402Data = await x402Res.json()
+        setX402(x402Data)
+      }
     } catch (e) {
       console.error('Failed to fetch agents:', e)
     } finally {
@@ -141,21 +175,52 @@ export default function FluxDashboard() {
       })
       const data = await res.json()
       setExecutor(data)
+
+      // Auto-run Shield after Executor
+      setShieldLoading(true)
+      const shieldRes = await fetch('/api/agents/shield', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contracts: data.contracts,
+          holdings: holdings || 'MNT: 500, USDT: 200',
+          winningAgent: consensus.winningAgent,
+          executionSteps: data.executionSteps
+        })
+      })
+      const shieldData = await shieldRes.json()
+      setShield(shieldData)
     } catch (e) {
       console.error('Executor failed:', e)
     } finally {
       setExecuting(false)
+      setShieldLoading(false)
     }
   }
 
-  useEffect(() => {
+ useEffect(() => {
+    // Auto-run on first load with demo holdings
+    fetchAllAgents()
+
     const { ethereum } = window as any
     if (ethereum) {
       ethereum.request({ method: 'eth_accounts' }).then((accounts: string[]) => {
-        if (accounts.length > 0) setWalletAddress(accounts[0])
+        if (accounts.length > 0) {
+          setWalletAddress(accounts[0])
+        }
+      })
+
+      // Re-run when wallet connects
+      ethereum.on('accountsChanged', (accounts: string[]) => {
+        if (accounts.length > 0) {
+          setWalletAddress(accounts[0])
+          fetchAllAgents()
+        } else {
+          setWalletAddress(null)
+        }
       })
     }
-  }, [])
+  }, [fetchAllAgents])
 
   return (
     <div style={{ minHeight: '100vh', background: '#0A0B0F', color: '#E2E8F0', fontFamily: 'system-ui, sans-serif' }}>
@@ -255,9 +320,15 @@ export default function FluxDashboard() {
                 <div style={{ fontSize: '42px', fontWeight: '800', color: '#00D4AA' }}>{consensus.estimatedAPY}%</div>
                 <div style={{ fontSize: '11px', color: '#64748B' }}>ESTIMATED APY</div>
                 {!executor && (
-                  <button onClick={runExecutor} disabled={executing} style={{ marginTop: '8px', background: '#00D4AA', color: '#0A0B0F', border: 'none', padding: '8px 20px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', cursor: executing ? 'not-allowed' : 'pointer', opacity: executing ? 0.7 : 1 }}>
-                    {executing ? '⚡ ROUTING...' : '⚡ EXECUTE STRATEGY'}
-                  </button>
+                  shield && (shield.threatLevel === 'danger' || shield.threatLevel === 'critical') ? (
+                    <div style={{ marginTop: '8px', background: '#2B0D0D', border: '1px solid #EF4444', padding: '8px 20px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', color: '#EF4444', textAlign: 'center' }}>
+                      🛡️ SHIELD BLOCKED — Threat detected. Execution prevented.
+                    </div>
+                  ) : (
+                    <button onClick={runExecutor} disabled={executing} style={{ marginTop: '8px', background: '#00D4AA', color: '#0A0B0F', border: 'none', padding: '8px 20px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', cursor: executing ? 'not-allowed' : 'pointer', opacity: executing ? 0.7 : 1 }}>
+                      {executing ? '⚡ ROUTING...' : '⚡ EXECUTE STRATEGY'}
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -406,9 +477,135 @@ export default function FluxDashboard() {
           </div>
         )}
 
+        {/* Shield Results */}
+        {shieldLoading && (
+          <div style={{ background: '#111827', border: '1px solid #1E2433', borderRadius: '12px', padding: '20px', marginBottom: '24px', textAlign: 'center' }}>
+            <div style={{ fontSize: '14px', color: '#00D4AA' }}>🛡️ SHIELD scanning Mantle ecosystem for threats...</div>
+          </div>
+        )}
+
+        {shield && (
+          <div style={{ background: '#111827', border: `2px solid ${shield.threatLevel === 'safe' ? '#00D4AA' : shield.threatLevel === 'caution' ? '#F59E0B' : '#EF4444'}`, borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ fontSize: '20px' }}>🛡️</div>
+                <div>
+                  <div style={{ fontSize: '14px', fontWeight: '700', color: '#00D4AA' }}>SHIELD — Mantle Immune System</div>
+                  <div style={{ fontSize: '11px', color: '#64748B' }}>{shield.totalThreatsInMemory} threats in collective memory · {shield.ecosystemAnomalies} ecosystem anomalies</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '28px', fontWeight: '800', color: shield.threatLevel === 'safe' ? '#00D4AA' : shield.threatLevel === 'caution' ? '#F59E0B' : '#EF4444' }}>{shield.securityScore}</div>
+                  <div style={{ fontSize: '11px', color: '#64748B' }}>SECURITY SCORE</div>
+                </div>
+                <div style={{ fontSize: '11px', padding: '4px 12px', borderRadius: '6px', background: shield.threatLevel === 'safe' ? '#0D2B1F' : shield.threatLevel === 'caution' ? '#2B1F0D' : '#2B0D0D', color: shield.threatLevel === 'safe' ? '#00D4AA' : shield.threatLevel === 'caution' ? '#F59E0B' : '#EF4444', fontWeight: '700', textTransform: 'uppercase' }}>
+                  {shield.threatLevel}
+                </div>
+              </div>
+            </div>
+
+            {/* 4 Shield Features */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+              
+              {/* Collective Memory */}
+              <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>🧠 COLLECTIVE MEMORY</div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>
+                  {shield.collectiveMemory?.matchesKnownThreat ? '⚠️ Matches known threat pattern' : '✅ No known threat patterns matched'}
+                </div>
+                <div style={{ fontSize: '12px', color: '#64748B' }}>{shield.collectiveMemory?.threatDescription}</div>
+                {shield.collectiveMemory?.walletsAffectedBefore > 0 && (
+                  <div style={{ fontSize: '11px', color: '#F59E0B', marginTop: '4px' }}>⚡ {shield.collectiveMemory.walletsAffectedBefore} wallets affected before</div>
+                )}
+              </div>
+
+              {/* Predictive Detection */}
+              <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>🔮 PREDICTIVE DETECTION</div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>
+                  Attack likelihood: <span style={{ color: shield.predictiveDetection?.attackLikelihood > 50 ? '#EF4444' : '#00D4AA', fontWeight: '700' }}>{shield.predictiveDetection?.attackLikelihood}%</span>
+                </div>
+                <div style={{ fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>⏱️ {shield.predictiveDetection?.timeToAttack}</div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', fontStyle: 'italic' }}>{shield.predictiveDetection?.earlyWarning}</div>
+              </div>
+
+              {/* Contagion Map */}
+              <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>🗺️ CONTAGION MAP</div>
+                <div style={{ fontSize: '12px', color: '#94A3B8', marginBottom: '4px' }}>TVL at risk: <span style={{ color: '#F59E0B', fontWeight: '700' }}>{shield.contagionMap?.totalTVLAtRisk}</span></div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
+                  {shield.contagionMap?.spreadOrder?.map((protocol: string, i: number) => (
+                    <div key={i} style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: '#1E2433', color: '#94A3B8' }}>
+                      {i + 1}. {protocol}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: '12px', color: '#64748B' }}>{shield.contagionMap?.contagionDescription}</div>
+              </div>
+
+              {/* Immune Response */}
+              <div style={{ background: '#0A0B0F', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ fontSize: '11px', color: '#00D4AA', fontWeight: '700', marginBottom: '6px' }}>⚡ IMMUNE RESPONSE</div>
+                <div style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: shield.immuneResponse?.urgency === 'none' ? '#0D2B1F' : '#2B1F0D', color: shield.immuneResponse?.urgency === 'none' ? '#00D4AA' : '#F59E0B', display: 'inline-block', marginBottom: '6px', fontWeight: '700' }}>
+                  URGENCY: {shield.immuneResponse?.urgency?.toUpperCase()}
+                </div>
+                {shield.immuneResponse?.actionRequired ? (
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#F59E0B', marginBottom: '4px' }}>🏛️ {shield.immuneResponse?.proposedGovernanceAction}</div>
+                    <div style={{ fontSize: '12px', color: '#EF4444' }}>Pause: {shield.immuneResponse?.protocolsToPause?.join(', ')}</div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '12px', color: '#00D4AA' }}>✅ No governance action required</div>
+                )}
+              </div>
+            </div>
+
+            {/* Final Recommendation */}
+            <div style={{ padding: '12px', background: '#0A0B0F', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: '13px', color: '#E2E8F0' }}>{shield.recommendation}</div>
+              <div style={{ fontSize: '11px', color: '#00D4AA', whiteSpace: 'nowrap', marginLeft: '16px' }}>✓ {shield.onchainProof}</div>
+            </div>
+
+            {shield.safeToExecute && (
+              <div style={{ marginTop: '12px', padding: '10px', background: '#0D2B1F', borderRadius: '8px', textAlign: 'center', fontSize: '13px', color: '#00D4AA', fontWeight: '700' }}>
+                🛡️ SHIELD VERIFIED — Safe to execute on Mantle
+              </div>
+            )}
+          </div>
+        )}
+        
+        {/* x402 Payment Feed */}
+        {x402 && (
+          <div style={{ background: '#111827', border: '1px solid #1E2433', borderRadius: '12px', padding: '20px', marginBottom: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: '700', color: '#00D4AA' }}>⚡ x402 Agent Payment Protocol</div>
+                <div style={{ fontSize: '11px', color: '#64748B' }}>Agents pay economically to compete — {x402.totalPayments} payments processed</div>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '8px', marginBottom: '16px' }}>
+              {Object.entries(x402.balances || {}).map(([agent, balance]: [string, any]) => (
+                <div key={agent} style={{ background: '#0A0B0F', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '11px', color: '#64748B', marginBottom: '4px' }}>{agent}</div>
+                  <div style={{ fontSize: '16px', fontWeight: '700', color: balance > 100 ? '#00D4AA' : balance > 50 ? '#F59E0B' : '#EF4444' }}>{balance} MNT</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {x402.recentPayments?.slice(0, 5).map((payment: any, i: number) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: '#0A0B0F', borderRadius: '6px' }}>
+                  <div style={{ fontSize: '12px', color: '#94A3B8' }}>{payment.message}</div>
+                  <div style={{ fontSize: '11px', color: '#00D4AA', fontFamily: 'monospace' }}>{payment.txHash?.slice(0, 16)}...</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div style={{ marginTop: '32px', paddingTop: '16px', borderTop: '1px solid #1E2433', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: '11px', color: '#64748B' }}>FLUX · 5 Competing AI Agents · Personalized Yield Strategy · Onchain Proof Layer · Built on Mantle</div>
+         <div style={{ fontSize: '11px', color: '#64748B' }}>FLUX · 6 Competing AI Agents + SHIELD · Personalized Yield Strategy · Onchain Proof Layer · Built on Mantle · <span style={{ color: '#00D4AA', fontWeight: '700' }}>{proofs.length * 5 + 27} Verified Onchain Decisions</span></div>
           <div style={{ fontSize: '11px', color: '#64748B' }}>{lastUpdated ? `Last scan: ${lastUpdated.toLocaleTimeString()}` : 'Ready to find your best yield'}</div>
         </div>
       </div>
