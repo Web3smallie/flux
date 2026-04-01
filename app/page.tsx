@@ -347,8 +347,26 @@ export default function FluxDashboard() {
               <div style={{ fontSize: '12px', color: '#64748B' }}>Gas: <span style={{ color: '#94A3B8' }}>{executor.estimatedGas}</span></div>
               <div style={{ fontSize: '12px', color: '#64748B' }}>Expected Yield: <span style={{ color: '#00D4AA', fontWeight: '700' }}>{executor.expectedYield}</span></div>
             </div>
+            <div style={{ display: 'flex', gap: '16px', paddingTop: '12px', borderTop: '1px solid #1E2433', flexWrap: 'wrap' }}>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>Contracts: <span style={{ color: '#94A3B8' }}>{executor.contracts?.join(', ')}</span></div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>Gas: <span style={{ color: '#94A3B8' }}>{executor.estimatedGas}</span></div>
+              <div style={{ fontSize: '12px', color: '#64748B' }}>Expected Yield: <span style={{ color: '#00D4AA', fontWeight: '700' }}>{executor.expectedYield}</span></div>
+            </div>
+            <div style={{ marginTop: '12px', padding: '12px', background: '#0D2B1F', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: '12px', color: '#00D4AA', fontWeight: '700', marginBottom: '4px' }}>⚡ Execution Plan Ready</div>
+                <div style={{ fontSize: '11px', color: '#64748B' }}>This is an AI-generated routing plan. In production, approving this plan triggers real contract interactions on Mantle. Full DEX integration coming in v2.</div>
+              </div>
+              <button
+                onClick={() => alert('In production, this would sign and submit the transaction to Mantle via MetaMask. Full execution coming in Flux v2.')}
+                style={{ background: '#00D4AA', color: '#0A0B0F', border: 'none', padding: '10px 20px', borderRadius: '8px', fontSize: '12px', fontWeight: '700', cursor: 'pointer', whiteSpace: 'nowrap', marginLeft: '16px' }}
+              >
+                Approve & Execute
+              </button>
+            </div>
           </div>
         )}
+
 
         {/* Strategies Tab */}
         {activeTab === 'strategies' && (

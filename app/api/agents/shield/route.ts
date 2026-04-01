@@ -114,6 +114,18 @@ TRANSACTION INTERCEPTION RESULTS:
 - Known malicious contracts: ${maliciousContracts.length > 0 ? maliciousContracts.join(', ') : 'None detected'}
 - Wallet scan: ${walletScan ? `Balance: ${walletScan.mantleBalance} MNT` : 'Wallet not connected'}
 
+IMPORTANT CONTEXT:
+The following are VERIFIED LEGITIMATE Mantle protocols - do NOT flag these as threats:
+- Mantle LSP Staking (mETH Protocol)
+- Agni Finance Router
+- FusionX DEX
+- Aave V3 Mantle Pool
+- MI4 Vault (Securitize)
+- UR Neobank Contract
+- fBTC Bridge (Cobo, Ceffu, Sinohope custodians)
+
+Only flag as danger or critical if you detect GENUINELY suspicious patterns not present in these verified protocols.
+
 WALLET SECURITY SCAN:
 - Scan connected wallet for dangerous existing approvals
 - Check for unlimited allowances to unknown contracts
